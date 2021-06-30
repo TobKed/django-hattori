@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 import inspect
 import logging
-from importlib import import_module
+import re
+from importlib import import_module, resources
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -33,34 +34,53 @@ def setting(name, default=None, strict=False):
 
 
 def autodiscover_module(module_name, app_name=None):
-    logger.info('Autodiscovering anonymizers modules ...')
+    logger.info("Autodiscovering anonymizers modules ...")
     apps_to_search = [app_name] if app_name else settings.INSTALLED_APPS
     modules = []
     for app in apps_to_search:
         try:
             import_module(app)
+        except ImportError:
+            pass
+        try:
+            match = re.match(r"(.*)(\.apps\.)", app)
+            if match:
+                app = match.group(1)
+                import_module(app)
         except ImportError as e:
             raise HattoriException('ERROR: Can not find app {}'.format(app), e)
         try:
-            modules.append(import_module('%s.%s' % (app, module_name)))
+            module = "%s.%s" % (app, module_name)
+            modules.append(import_module(module))
+            # try import package files if possible
+            try:
+                module_files = resources.contents(module)
+                module_contents = [f[:-3] for f in module_files if f.endswith(".py") and f[0] != "_"]
+                for module_content in module_contents:
+                    modules.append(import_module("%s.%s" % (module, module_content)))
+            except TypeError:
+                pass
         except ImportError as e:
             if app_name:
-                raise HattoriException('ERROR: Can not find module {}'.format(module_name, app), e)
-    logger.info('Found anonymizers for {} apps'.format(len(modules)))
+                raise HattoriException("ERROR: Can not find module {} {}".format(module_name, app), e)
+    logger.info("Found anonymizers for {} apps".format(len(modules)))
     return modules
 
 
 def get_app_anonymizers(module, selected_models=None):
-    logger.info('Autodiscovering Anonymizer classes from {} module...'.format(module.__package__))
+    logger.info("Autodiscovering Anonymizer classes from {} module...".format(module.__package__))
     models = None
     if selected_models is not None:
-        models = [m.strip() for m in selected_models.split(',')]
+        models = [m.strip() for m in selected_models.split(",")]
 
     if models:
-        clazzes = [m[0] for m in inspect.getmembers(module, inspect.isclass)
-                   if BaseAnonymizer in m[1].__bases__ and m[1].model.__name__ in models]
+        clazzes = [
+            m[0]
+            for m in inspect.getmembers(module, inspect.isclass)
+            if BaseAnonymizer in m[1].__bases__ and m[1].model.__name__ in models
+        ]
     else:
         clazzes = [m[0] for m in inspect.getmembers(module, inspect.isclass) if BaseAnonymizer in m[1].__bases__]
     if len(clazzes) == 0:
-        logger.info('Not found any Anonymizer class from {} module'.format(module.__package__))
+        logger.info("Not found any Anonymizer class from {} module".format(module.__package__))
     return clazzes
